@@ -1,13 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { getDashboardMetrics, type DashboardMetrics } from "../api";
-import { EmptyState, IntegrationPending, PageHeader } from "../components/PagePrimitives";
+import { EmptyState, ErrorState, LoadingState, PageHeader, StatusBadge } from "../components/PagePrimitives";
 import { PaymentDialog } from "../components/PaymentDialog";
+import { Icon } from "../components/Icon";
 import { formatBrl, formatDate } from "../format";
-
-const metricKeys = [
-  ["alunos_ativos", "Acolhidos ativos"], ["contratos_ativos", "Contratos ativos"],
-  ["mensalidades_pendentes", "Mensalidades pendentes"], ["pagamentos_registrados", "Pagamentos registrados"],
-] as const;
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardMetrics | null>(null);
@@ -18,29 +14,36 @@ export default function DashboardPage() {
   const [paymentNotice, setPaymentNotice] = useState("");
   useEffect(() => {
     let active = true;
-    getDashboardMetrics().then((result) => { if (active) setData(result); }).catch(() => { if (active) setError("Não foi possível carregar os indicadores. Confira a conexão da API e do banco."); }).finally(() => { if (active) setLoading(false); });
+    setLoading(true); setError("");
+    getDashboardMetrics().then(result => { if (active) setData(result); }).catch(() => { if (active) setError("Confira a conexao da API e tente novamente."); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [refresh]);
   const paymentSucceeded = useCallback(() => {
-    setPaymentNotice("Pagamento registrado. Atualizando vencimentos e indicadores…");
-    setRefresh((value) => value + 1);
+    setPaymentNotice("Pagamento registrado. Atualizando os indicadores...");
+    setRefresh(value => value + 1);
   }, []);
+  const metrics = [
+    { label: "Alunos ativos", value: data?.alunos_ativos, icon: "users" as const },
+    { label: "Contratos ativos", value: data?.contratos_ativos, icon: "contract" as const },
+    { label: "Mensalidades pendentes", value: data?.mensalidades_pendentes, icon: "calendar" as const },
+    { label: "Recebido neste mês", value: data ? formatBrl(Math.round(Number(data.resumo_financeiro_mes.valor_recebido) * 100)) : undefined, icon: "wallet" as const },
+  ];
   return <>
-    <PageHeader eyebrow="PAINEL DE GESTÃO" title="Visão geral" description="Acompanhe acolhimentos, contratos e movimentações financeiras do Átrio." />
-    {paymentNotice && <div className="payment-result payment-result-success" role="status">{paymentNotice}</div>}
-    {error && <div className="integration-pending" role="alert"><div><strong>Consulta indisponível</strong><p>{error}</p></div></div>}
-    {loading && <p role="status">Carregando indicadores…</p>}
-    <section className="metric-grid" aria-label="Indicadores do painel">
-      {metricKeys.map(([key, label], index) => <article className="metric-card" key={key}><div className="metric-card-top"><span>{label}</span><span className={`metric-mark metric-mark-${index + 1}`} /></div><strong>{data ? data[key] : "—"}</strong><small>{data ? "Atualizado pela API" : "Aguardando dados"}</small></article>)}
-    </section>
-    <div className="dashboard-panels">
-      <section className="management-panel"><div className="panel-heading"><div><span className="management-eyebrow">AGENDA FINANCEIRA</span><h2>Próximos vencimentos</h2></div><span className="panel-pill">{data ? data.proximos_vencimentos.length : "—"}</span></div>
-        {data?.proximos_vencimentos.length ? <div className="table-scroll"><table><thead><tr><th>Acolhido</th><th>Competência</th><th>Vencimento</th><th>Valor devido</th><th>Tipo</th><th>Ação</th></tr></thead><tbody>{data.proximos_vencimentos.map((item) => <tr key={item.id}><td>{item.aluno_nome}</td><td>{item.competencia.slice(0, 7)}</td><td>{formatDate(item.data_vencimento)}</td><td>{formatBrl(Math.round(Number(item.valor_devido) * 100))}</td><td>{item.tipo_cobranca}</td><td><button type="button" className="text-action" onClick={() => { setPaymentNotice(""); setSelectedBill(item); }}>Dar baixa</button></td></tr>)}</tbody></table></div> : data ? <EmptyState title="Sem próximos vencimentos" detail="Não há cobranças pendentes com vencimento futuro cadastradas." /> : <IntegrationPending>Os vencimentos serão exibidos quando a consulta de indicadores responder.</IntegrationPending>}
+    <PageHeader eyebrow="PAINEL DE GESTÃO" title="Visão geral" description="Acompanhe a operação e os pontos que precisam de atenção." />
+    {paymentNotice && <div className="payment-result payment-result-success" role="status"><Icon name="check" size={18} />{paymentNotice}</div>}
+    {error && <ErrorState message={error} onRetry={() => setRefresh(value => value + 1)} />}
+    {loading && <LoadingState label="Atualizando indicadores e vencimentos..." />}
+    {!error && <section className="metric-grid" aria-label="Indicadores principais">
+      {metrics.map(metric => <article className="metric-card" key={metric.label}><div className="metric-card-top"><span>{metric.label}</span><span className="metric-mark"><Icon name={metric.icon} size={19} /></span></div><strong>{metric.value ?? "—"}</strong><small>{data ? "Dados atuais do sistema" : "Aguardando resposta da API"}</small></article>)}
+    </section>}
+    {data && !error && <div className="dashboard-panels">
+      <section className="management-panel"><div className="panel-heading"><div><span className="management-eyebrow">AGENDA</span><h2>Próximos vencimentos</h2><p>Mensalidades pendentes ordenadas pela data de vencimento.</p></div><span className="panel-pill">{data.proximos_vencimentos.length} próximos</span></div>
+        {data.proximos_vencimentos.length ? <div className="table-scroll"><table><thead><tr><th>Aluno</th><th>Competência</th><th>Vencimento</th><th>Valor pendente</th><th>Situação</th><th>Ação</th></tr></thead><tbody>{data.proximos_vencimentos.map(item => <tr key={item.id}><td><strong>{item.aluno_nome}</strong></td><td>{item.competencia.slice(0, 7)}</td><td>{formatDate(item.data_vencimento)}</td><td>{formatBrl(Math.round(Number(item.valor_devido) * 100))}</td><td><StatusBadge status="Pendente" /></td><td><button type="button" className="text-action" onClick={() => { setPaymentNotice(""); setSelectedBill(item); }}><Icon name="receipt" size={16} /> Registrar baixa</button></td></tr>)}</tbody></table></div> : <EmptyState title="Sem próximos vencimentos" detail="Não há cobranças pendentes com vencimento futuro retornadas pela API." />}
       </section>
-      <section className="management-panel"><div className="panel-heading"><div><span className="management-eyebrow">COMPETÊNCIA ATUAL</span><h2>Resumo financeiro</h2></div><span className="panel-pill">{data?.resumo_financeiro_mes.competencia ?? "—"}</span></div>
-        {data ? <div className="financial-placeholder"><div><span>Valores recebidos</span><strong>{formatBrl(Math.round(Number(data.resumo_financeiro_mes.valor_recebido) * 100))}</strong></div><div><span>Valores em aberto</span><strong>{formatBrl(Math.round(Number(data.resumo_financeiro_mes.valor_em_aberto) * 100))}</strong></div><p>Recebido pelo pagamento registrado neste mês; em aberto pelas parcelas pendentes da competência atual.</p></div> : <IntegrationPending>O resumo financeiro aparecerá após uma resposta confirmada da API.</IntegrationPending>}
+      <section className="management-panel"><div className="panel-heading"><div><span className="management-eyebrow">RESUMO DO MÊS</span><h2>Movimentação financeira</h2></div><span className="panel-pill">{data.resumo_financeiro_mes.competencia}</span></div>
+        <div className="financial-placeholder"><div><span>Valores recebidos</span><strong>{formatBrl(Math.round(Number(data.resumo_financeiro_mes.valor_recebido) * 100))}</strong></div><div><span>Valores em aberto</span><strong>{formatBrl(Math.round(Number(data.resumo_financeiro_mes.valor_em_aberto) * 100))}</strong></div><div className="dashboard-payment-count"><span>Pagamentos registrados</span><strong>{data.pagamentos_registrados}</strong></div><p>Totais calculados a partir dos registros financeiros do sistema.</p></div>
       </section>
-    </div>
+    </div>}
     {selectedBill && <PaymentDialog bill={selectedBill} onCancel={() => setSelectedBill(null)} onSuccess={paymentSucceeded} />}
   </>;
 }

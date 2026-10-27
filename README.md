@@ -1,6 +1,6 @@
 # Átrio
 
-API de cadastro e controle financeiro com FastAPI e Supabase. A implementação local ainda não tem autenticação/autorização; **não disponibilize dados reais nem considere a API pronta para produção**.
+API de cadastro e controle financeiro com FastAPI e Supabase. A API agora exige Supabase Auth e perfil ativo no backend. Para ambiente de desenvolvimento, configure o SDK no frontend, aplique e valide `supabase/migrations/20261027_01_user_profiles.sql` somente no banco `atrio-dev` e siga [a documentação de autenticação](docs/autenticacao-atrio-dev.md). A autenticação remota e a migração ainda não foram validadas.
 
 ## Configuração local
 
@@ -203,7 +203,7 @@ O formulário valida os campos, apresenta a data do primeiro vencimento (contrat
 
 O endpoint de cadastro e a nova reativação precisam de uma instância de backend conectada ao banco de desenvolvimento com as migrações aplicáveis. Não configure nem use credenciais de produção para desenvolvimento. Nenhuma conexão ou migração remota foi executada nesta etapa.
 
-**Segurança:** a API ainda não possui autenticação e autorização por perfil adequadas. Não use dados reais nem disponibilize esses endpoints em produção antes de proteger dados pessoais, operações financeiras e comprovantes. Mantenha a `service_role` apenas em segredo do backend, fora do frontend, dos exemplos e do repositório.
+**Segurança:** os endpoints de negócio agora exigem um token Supabase válido e perfil autorizado; a API usa `service_role`, que ignora RLS, portanto mantém autorização explícita no servidor. Não use dados reais nem disponibilize em produção antes de instalar e validar o SDK, aplicar a migration no banco correto e concluir as verificações do ambiente. Mantenha a `service_role` apenas em segredo do backend, fora do frontend, dos exemplos e do repositório.
 
 ## Endpoints de leitura
 
@@ -229,7 +229,7 @@ O encerramento mantém contratos, mensalidades e pagamentos históricos. A migra
 
 Os totais financeiros do dashboard seguem esta regra: recebido soma `pagamentos_mensalidade.valor_pago` pelo mês de `pago_em`; em aberto soma `mensalidades.valor_devido` das parcelas pendentes cuja competência é o mês corrente. As rotas respondem `404` para detalhes inexistentes, `422` para parâmetros inválidos e mensagens genéricas `502` para falha de consulta. As listagens usam consultas em lote para dados relacionados e paginação; o filtro de pagamentos por aluno utiliza a relação `pagamentos_mensalidade.mensalidade_id -> mensalidades.id` declarada no schema local.
 
-As rotas dependem das tabelas e colunas disponíveis no banco usado pelo backend. Os formatos das chaves estrangeiras foram comparados com `supabase/schema.sql` e a migração local, mas não foi possível confirmar a conectividade nem os metadados do Supabase de desenvolvimento nesta execução. Valide a relação usada pelo PostgREST no ambiente conectado antes de considerar a integração real confirmada. Nenhuma migração foi executada. Como a API ainda não tem autenticação/autorização, não use estes endpoints com dados reais nem os exponha em produção.
+As rotas dependem das tabelas e colunas disponíveis no banco usado pelo backend. Os formatos das chaves estrangeiras foram comparados com `supabase/schema.sql` e a migração local, mas não foi possível confirmar a conectividade nem os metadados do Supabase de desenvolvimento nesta execução. Valide a relação usada pelo PostgREST no ambiente conectado antes de considerar a integração real confirmada. Nenhuma migração foi executada. A API implementa autenticacao/autorizacao local; valide a migration, SDK e ambiente antes do uso com dados reais ou implantacao.
 
 Na agenda do Dashboard, “Dar baixa” abre um formulário para a mensalidade selecionada e envia os campos `mensalidade_id`, `valor_pago` e `forma_pagamento` como `multipart/form-data`, com `comprovante` opcional. A função SQL `baixar_mensalidade` exige que o valor recebido seja exatamente igual ao valor devido e muda o status de `pendente` para `paga`; **não aceita baixa parcial**. Em caso de sucesso, os indicadores são consultados novamente. O Dashboard usa as mesmas formas de pagamento aceitas por `POST /mensalidades/baixa`: `dinheiro`, `pix`, `cartao_credito`, `cartao_debito`, `transferencia`, `boleto` e `outro`.
 

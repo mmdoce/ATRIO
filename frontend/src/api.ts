@@ -1,4 +1,5 @@
 import { createPaymentFormData } from "./paymentFlow.ts";
+import { supabase } from "./supabase";
 
 export type CadastroResponse = {
   aluno_id: string;
@@ -70,10 +71,12 @@ const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
+    const { data } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
     response = await fetch(`${apiBaseUrl}${path}`, {
       ...init,
       headers: {
         Accept: "application/json",
+        ...(data.session?.access_token ? { Authorization: `Bearer ${data.session.access_token}` } : {}),
         ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
         ...init?.headers,
       },
@@ -83,6 +86,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401 && supabase) await supabase.auth.signOut();
     if (response.status === 409) {
       throw new ApiError("A operação entrou em conflito com o estado atual do cadastro ou da cobrança.", response.status);
     }
@@ -137,10 +141,10 @@ export type ReactivationPayload = {
 export function reactivateAluno(id: string, payload: ReactivationPayload): Promise<CadastroResponse> {
   return request(`/alunos/${encodeURIComponent(id)}/reativar`, { method: "POST", body: JSON.stringify(payload) });
 }
-export function listMensalidades(params: { competencia?: string; status?: string; aluno_id?: string; contrato_id?: string; limit?: number; offset?: number } = {}): Promise<Page<MensalidadeRecord>> {
+export function listMensalidades(params: { q?: string; competencia?: string; status?: string; aluno_id?: string; contrato_id?: string; limit?: number; offset?: number } = {}): Promise<Page<MensalidadeRecord>> {
   return request(`/mensalidades${queryString(params)}`);
 }
-export function listPagamentos(params: { mensalidade_id?: string; aluno_id?: string; data_inicio?: string; data_fim?: string; limit?: number; offset?: number } = {}): Promise<Page<PagamentoRecord>> {
+export function listPagamentos(params: { q?: string; mensalidade_id?: string; aluno_id?: string; data_inicio?: string; data_fim?: string; limit?: number; offset?: number } = {}): Promise<Page<PagamentoRecord>> {
   return request(`/pagamentos${queryString(params)}`);
 }
 export function getDashboardMetrics(): Promise<DashboardMetrics> { return request("/dashboard/indicadores"); }
@@ -169,4 +173,13 @@ export type PaymentPayload = {
 export function registerPayment(payload: PaymentPayload): Promise<unknown> {
   const form = createPaymentFormData(payload);
   return request("/mensalidades/baixa", { method: "POST", body: form });
+}
+
+export type UserProfile = { id: string; email?: string | null; role: "DIRETOR" | "MONITOR"; active: boolean; created_at?: string };
+export function listUsers(): Promise<UserProfile[]> { return request("/admin/usuarios"); }
+export function inviteUser(email: string, role: UserProfile["role"]): Promise<UserProfile> {
+  return request("/admin/usuarios", { method: "POST", body: JSON.stringify({ email, role }) });
+}
+export function updateUserProfile(id: string, changes: Partial<Pick<UserProfile, "role" | "active">>): Promise<UserProfile> {
+  return request(`/admin/usuarios/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(changes) });
 }

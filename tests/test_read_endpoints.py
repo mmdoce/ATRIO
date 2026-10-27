@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from app import main
+from app.auth import CurrentUser, authenticated_user
 
 
 class ReadEndpointTests(unittest.TestCase):
@@ -14,9 +15,11 @@ class ReadEndpointTests(unittest.TestCase):
         self.client = TestClient(main.app)
         self.previous_supabase = main.supabase
         main.supabase = object()  # service is mocked; no network/database connection is made
+        main.app.dependency_overrides[authenticated_user] = lambda: CurrentUser("00000000-0000-4000-8000-000000000001", "test@example.invalid", "DIRETOR")
 
     def tearDown(self) -> None:
         main.supabase = self.previous_supabase
+        main.app.dependency_overrides.clear()
 
     def test_alunos_lista_vazia_e_encaminha_filtros_e_paginacao(self) -> None:
         with patch.object(main.read_services, "list_alunos", return_value={"items": [], "total": 0, "limit": 10, "offset": 20}) as read:

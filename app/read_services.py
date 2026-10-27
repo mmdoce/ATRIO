@@ -35,6 +35,19 @@ def _lookup(client: Client, table: str, columns: str, key: str, ids: list[str]) 
     return {str(row["id"]): row for row in _rows(response)}
 
 
+def _matching_aluno_ids(client: Client, value: str) -> list[str]:
+    term = re.sub(r"[^\w\s.-]", "", value, flags=re.UNICODE).strip()
+    if not term:
+        return []
+    digits = re.sub(r"\D", "", term)
+    query = client.table("alunos").select("id")
+    if len(digits) == 11:
+        query = query.or_(f"nome.ilike.%{term}%,cpf.eq.{digits},cpf.eq.{term}")
+    else:
+        query = query.ilike("nome", f"%{term}%")
+    return [str(row["id"]) for row in _rows(query.limit(500).execute())]
+
+
 def _contract_summary(row: dict[str, Any], responsible: dict[str, Any] | None = None) -> dict[str, Any]:
     result = {key: row.get(key) for key in (
         "id", "numero_contrato", "data_contrato", "tipo_vaga", "mensalidade_valor",
@@ -130,12 +143,14 @@ def get_aluno(client: Client, aluno_id: UUID) -> dict[str, Any] | None:
     return aluno
 
 
-def list_contratos(client: Client, limit: int, offset: int, aluno_id: UUID | None, situacao: str | None) -> dict[str, Any]:
+def list_contratos(client: Client, limit: int, offset: int, aluno_id: UUID | None, situacao: str | None, created_by_user_id: str | None = None) -> dict[str, Any]:
     filters = []
     if aluno_id:
         filters.append(("eq", "aluno_id", str(aluno_id)))
     if situacao:
         filters.append(("eq", "situacao", situacao))
+    if created_by_user_id:
+        filters.append(("eq", "created_by_user_id", created_by_user_id))
     rows, total = _page(client, "contratos", "id,numero_contrato,aluno_id,responsavel_financeiro_id,data_contrato,tipo_vaga,mensalidade_valor,matricula_valor,cobrar_matricula,primeiro_vencimento,vencimento_dia,situacao,criado_em", limit, offset, filters)
     alunos = _lookup(client, "alunos", "id,nome", "id", [str(row["aluno_id"]) for row in rows])
     result = []
@@ -146,8 +161,11 @@ def list_contratos(client: Client, limit: int, offset: int, aluno_id: UUID | Non
     return _paged(result, total, limit, offset)
 
 
-def get_contrato(client: Client, contrato_id: UUID) -> dict[str, Any] | None:
-    response = client.table("contratos").select("id,numero_contrato,aluno_id,responsavel_financeiro_id,data_contrato,tipo_vaga,mensalidade_valor,matricula_valor,cobrar_matricula,primeiro_vencimento,vencimento_dia,situacao,criado_em,atualizado_em").eq("id", str(contrato_id)).limit(1).execute()
+def get_contrato(client: Client, contrato_id: UUID, created_by_user_id: str | None = None) -> dict[str, Any] | None:
+    query = client.table("contratos").select("id,numero_contrato,aluno_id,responsavel_financeiro_id,data_contrato,tipo_vaga,mensalidade_valor,matricula_valor,cobrar_matricula,primeiro_vencimento,vencimento_dia,situacao,criado_em,atualizado_em").eq("id", str(contrato_id))
+    if created_by_user_id:
+        query = query.eq("created_by_user_id", created_by_user_id)
+    response = query.limit(1).execute()
     rows = _rows(response)
     if not rows:
         return None
@@ -162,7 +180,7 @@ def get_contrato(client: Client, contrato_id: UUID) -> dict[str, Any] | None:
     return row
 
 
-def list_mensalidades(client: Client, limit: int, offset: int, competencia: date | None, status: str | None, aluno_id: UUID | None, contrato_id: UUID | None) -> dict[str, Any]:
+def list_mensalidades(client: Client, limit: int, offset: int, competencia: date | None, status: str | None, aluno_id: UUID | None, contrato_id: UUID | None, aluno_q: str | None = None) -> dict[str, Any]:
     filters = []
     if competencia:
         filters.append(("eq", "competencia", competencia.isoformat()))
@@ -172,6 +190,11 @@ def list_mensalidades(client: Client, limit: int, offset: int, competencia: date
         filters.append(("eq", "aluno_id", str(aluno_id)))
     if contrato_id:
         filters.append(("eq", "contrato_id", str(contrato_id)))
+    if aluno_q:
+        matched = _matching_aluno_ids(client, aluno_q)
+        if not matched:
+            return _paged([], 0, limit, offset)
+        filters.append(("in_", "aluno_id", matched))
     rows, total = _page(client, "mensalidades", "id,aluno_id,contrato_id,tipo_cobranca,competencia,data_vencimento,valor_devido,valor_pago,forma_pagamento,status,comprovante_path,pago_em,criado_em", limit, offset, filters)
     students = _lookup(client, "alunos", "id,nome", "id", [str(row["aluno_id"]) for row in rows])
     contracts = _lookup(client, "contratos", "id,numero_contrato", "id", [str(row["contrato_id"]) for row in rows if row.get("contrato_id")])
@@ -184,7 +207,7 @@ def list_mensalidades(client: Client, limit: int, offset: int, competencia: date
     return _paged(result, total, limit, offset)
 
 
-def list_pagamentos(client: Client, limit: int, offset: int, mensalidade_id: UUID | None, aluno_id: UUID | None, data_inicio: date | None, data_fim: date | None) -> dict[str, Any]:
+def list_pagamentos(client: Client, limit: int, offset: int, mensalidade_id: UUID | None, aluno_id: UUID | None, data_inicio: date | None, data_fim: date | None, aluno_q: str | None = None) -> dict[str, Any]:
     query = client.table("pagamentos_mensalidade").select(
         "id,mensalidade_id,valor_pago,forma_pagamento,comprovante_path,pago_em,criado_em,"
         "mensalidade:mensalidades!inner(id,aluno_id,competencia,data_vencimento,contrato_id)", count="exact"
@@ -193,6 +216,15 @@ def list_pagamentos(client: Client, limit: int, offset: int, mensalidade_id: UUI
         query = query.eq("mensalidade_id", str(mensalidade_id))
     if aluno_id:
         query = query.eq("mensalidade.aluno_id", str(aluno_id))
+    if aluno_q:
+        aluno_ids = _matching_aluno_ids(client, aluno_q)
+        if not aluno_ids:
+            return _paged([], 0, limit, offset)
+        bills = _rows(client.table("mensalidades").select("id").in_("aluno_id", aluno_ids).limit(1000).execute())
+        bill_ids = [str(row["id"]) for row in bills]
+        if not bill_ids:
+            return _paged([], 0, limit, offset)
+        query = query.in_("mensalidade_id", bill_ids)
     if data_inicio:
         query = query.gte("pago_em", datetime.combine(data_inicio, datetime.min.time()).isoformat())
     if data_fim:

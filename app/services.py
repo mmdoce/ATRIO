@@ -8,7 +8,7 @@ from app.money import valor_por_extenso
 from app.schemas import CadastroAlunoCreate, ContratoExistenteCreate, ReativarAlunoCreate
 
 
-def cadastrar_aluno_contrato(client: Client, cadastro: CadastroAlunoCreate) -> dict[str, Any]:
+def cadastrar_aluno_contrato(client: Client, cadastro: CadastroAlunoCreate, creator_id: str) -> dict[str, Any]:
     """Create the linked people, contract and initial charges in one DB transaction."""
     response = client.rpc(
         "cadastrar_aluno_contrato",
@@ -21,6 +21,7 @@ def cadastrar_aluno_contrato(client: Client, cadastro: CadastroAlunoCreate) -> d
             "p_matricula_valor": str(cadastro.contrato.matricula_valor),
             "p_cobrar_matricula": cadastro.contrato.cobrar_matricula,
             "p_vencimento_dia": cadastro.contrato.vencimento_dia,
+            "p_created_by_user_id": creator_id,
         },
     ).execute()
     return {
@@ -30,7 +31,7 @@ def cadastrar_aluno_contrato(client: Client, cadastro: CadastroAlunoCreate) -> d
     }
 
 
-def cadastrar_contrato_existente(client: Client, contrato: ContratoExistenteCreate) -> dict[str, Any]:
+def cadastrar_contrato_existente(client: Client, contrato: ContratoExistenteCreate, creator_id: str) -> dict[str, Any]:
     response = client.rpc(
         "cadastrar_contrato_existente",
         {
@@ -42,6 +43,7 @@ def cadastrar_contrato_existente(client: Client, contrato: ContratoExistenteCrea
             "p_matricula_valor": str(contrato.matricula_valor),
             "p_cobrar_matricula": contrato.cobrar_matricula,
             "p_vencimento_dia": contrato.vencimento_dia,
+            "p_created_by_user_id": creator_id,
         },
     ).execute()
     return {
@@ -51,7 +53,7 @@ def cadastrar_contrato_existente(client: Client, contrato: ContratoExistenteCrea
     }
 
 
-def reativar_aluno_com_novo_contrato(client: Client, contrato: ReativarAlunoCreate, aluno_id: str) -> dict[str, Any]:
+def reativar_aluno_com_novo_contrato(client: Client, contrato: ReativarAlunoCreate, aluno_id: str, creator_id: str) -> dict[str, Any]:
     """Reactivate an ended student through one database transaction and a new contract."""
     response = client.rpc(
         "reativar_aluno_contrato",
@@ -64,6 +66,7 @@ def reativar_aluno_com_novo_contrato(client: Client, contrato: ReativarAlunoCrea
             "p_matricula_valor": str(contrato.matricula_valor),
             "p_cobrar_matricula": contrato.cobrar_matricula,
             "p_vencimento_dia": contrato.vencimento_dia,
+            "p_created_by_user_id": creator_id,
         },
     ).execute()
     return {

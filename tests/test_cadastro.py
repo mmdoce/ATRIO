@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import main
+from app.auth import CurrentUser, authenticated_user
 from app.schemas import CadastroAlunoCreate
 
 
@@ -85,10 +86,12 @@ class CadastroApiTests(unittest.TestCase):
         self.client = FakeClient()
         self.previous = main.supabase
         main.supabase = self.client  # type: ignore[assignment]
+        main.app.dependency_overrides[authenticated_user] = lambda: CurrentUser("00000000-0000-4000-8000-000000000001", "test@example.invalid", "DIRETOR")
         self.http = TestClient(main.app)
 
     def tearDown(self) -> None:
         main.supabase = self.previous
+        main.app.dependency_overrides.clear()
 
     def test_cadastro_de_aluno_responsavel_e_contrato(self) -> None:
         response = self.http.post("/alunos", json=payload())
@@ -103,7 +106,7 @@ class CadastroApiTests(unittest.TestCase):
             set(args),
             {
                 "p_aluno", "p_responsavel", "p_data_contrato", "p_tipo_vaga",
-                "p_mensalidade_valor", "p_matricula_valor", "p_cobrar_matricula", "p_vencimento_dia",
+                "p_mensalidade_valor", "p_matricula_valor", "p_cobrar_matricula", "p_vencimento_dia", "p_created_by_user_id",
             },
         )
         self.assertEqual(

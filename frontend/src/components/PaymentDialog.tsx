@@ -2,6 +2,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { ApiError, PAYMENT_METHODS, registerPayment, type DashboardMetrics, type PaymentMethod } from "../api";
 import { formatBrl, formatDate, parseBrlToCents } from "../format";
 import { cancelPayment, confirmPayment, validateFullPayment } from "../paymentFlow";
+import { Icon } from "./Icon";
 
 type Bill = DashboardMetrics["proximos_vencimentos"][number];
 
@@ -60,7 +61,7 @@ export function PaymentDialog({ bill, onCancel, onSuccess }: {
   const cancel = () => { if (!sending) cancelPayment(onCancel); };
   return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) cancel(); }}>
     <section className="payment-dialog" role="dialog" aria-modal="true" aria-labelledby="payment-dialog-title">
-      <div className="panel-heading"><div><span className="management-eyebrow">BAIXA DE MENSALIDADE</span><h2 id="payment-dialog-title">Registrar pagamento</h2></div><button type="button" className="dialog-close" aria-label="Cancelar e fechar" disabled={sending} onClick={cancel}>×</button></div>
+      <div className="panel-heading"><div><span className="management-eyebrow">BAIXA DE MENSALIDADE</span><h2 id="payment-dialog-title">Registrar pagamento</h2></div><button type="button" className="dialog-close" aria-label="Cancelar e fechar" disabled={sending} onClick={cancel}><Icon name="close" size={20} /></button></div>
       <div className="payment-dialog-summary">
         <strong>{bill.aluno_nome}</strong>
         <span>Competência {bill.competencia.slice(0, 7)} · vencimento {formatDate(bill.data_vencimento)}</span>

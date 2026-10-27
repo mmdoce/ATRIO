@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -36,6 +36,7 @@ from app.schemas import (
 )
 from app.services import cadastrar_aluno_contrato, cadastrar_contrato_existente, reativar_aluno_com_novo_contrato
 from app import read_services
+from app.auth import CurrentUser, require_roles
 
 load_dotenv()
 
@@ -51,6 +52,7 @@ if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 app = FastAPI(title="Átrio API", version="0.2.0")
+app.state.supabase = supabase
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_VALUE = re.compile(
@@ -96,8 +98,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -114,6 +116,82 @@ async def sanitized_validation_error(request: Request, exc: RequestValidationErr
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/auth/me")
+def auth_me(user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR"))) -> dict:
+    return {"id": user.id, "email": user.email, "role": user.role}
+
+
+@app.get("/admin/usuarios")
+def listar_usuarios(user: CurrentUser = Depends(require_roles("DIRETOR"))) -> list[dict]:
+    try:
+        client = _require_supabase()
+        result = client.table("user_profiles").select("id,role,active,created_at").order("created_at").execute()
+        users = []
+        for profile in result.data or []:
+            auth_user = client.auth.admin.get_user_by_id(profile["id"]).user
+            users.append({**profile, "email": getattr(auth_user, "email", None)})
+        return users
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Não foi possível consultar perfis; confirme a migração local de autenticação.") from exc
+
+
+@app.post("/admin/usuarios", status_code=status.HTTP_201_CREATED)
+def convidar_usuario(payload: dict, user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
+    email = payload.get("email")
+    role = payload.get("role")
+    if not isinstance(email, str) or len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or role not in {"DIRETOR", "MONITOR"}:
+        raise HTTPException(status_code=422, detail="Informe um e-mail válido e um perfil permitido.")
+    client = _require_supabase()
+    auth_user = None
+    try:
+        if role == "DIRETOR":
+            directors = client.table("user_profiles").select("id").eq("role", "DIRETOR").eq("active", True).limit(1).execute()
+            if not directors.data:
+                raise HTTPException(status_code=409, detail="Não há Diretor ativo; use o procedimento administrativo de primeiro provisionamento.")
+        invite_options: dict = {}
+        redirect = os.getenv("AUTH_INVITE_REDIRECT_URL")
+        if redirect:
+            invite_options["redirect_to"] = redirect
+        invited = client.auth.admin.invite_user_by_email(email.strip().lower(), options=invite_options)
+        auth_user = invited.user
+        if auth_user is None:
+            raise RuntimeError("Invite did not return a user")
+        client.table("user_profiles").insert({"id": auth_user.id, "role": role, "active": True}).execute()
+        return {"id": str(auth_user.id), "role": role, "active": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if auth_user is not None:
+            try:
+                client.auth.admin.delete_user(auth_user.id)
+            except Exception:
+                logger.error("Falha ao remover usuário Auth órfão após convite incompleto.")
+        logger.error("Falha no convite de usuário (%s)", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Não foi possível concluir o convite. Verifique o SMTP e os logs do Supabase.") from exc
+
+
+@app.patch("/admin/usuarios/{user_id}")
+def atualizar_perfil_usuario(user_id: UUID, payload: dict, user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
+    if str(user_id) == user.id and payload.get("role") == "DIRETOR":
+        raise HTTPException(status_code=403, detail="Não é permitido elevar o próprio perfil.")
+    if not payload or set(payload) - {"role", "active"}:
+        raise HTTPException(status_code=422, detail="Informe somente role e/ou active.")
+    if "role" in payload and payload["role"] not in {"DIRETOR", "MONITOR"}:
+        raise HTTPException(status_code=422, detail="Perfil inválido.")
+    if "active" in payload and not isinstance(payload["active"], bool):
+        raise HTTPException(status_code=422, detail="Estado active inválido.")
+    try:
+        result = _require_supabase().table("user_profiles").update(payload).eq("id", str(user_id)).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Perfil não encontrado.")
+        return {"id": str(user_id), "role": result.data[0]["role"], "active": result.data[0]["active"]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Falha na atualização de perfil (%s)", type(exc).__name__)
+        raise HTTPException(status_code=409, detail="Não foi possível alterar o perfil; a operação pode preservar o último Diretor ativo.") from exc
 
 
 def _require_supabase() -> Client:
@@ -134,9 +212,14 @@ def listar_alunos(
     situacao: Literal["ativo", "encerrado", "inativo"] | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR")),
 ) -> dict:
     try:
-        return read_services.list_alunos(_require_supabase(), limit, offset, q, ativo, situacao)
+        result = read_services.list_alunos(_require_supabase(), limit, offset, q, ativo, situacao)
+        if user.role == "MONITOR":
+            for item in result.get("items", []):
+                item["contrato_atual"] = None
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -145,7 +228,7 @@ def listar_alunos(
 
 
 @app.get("/alunos/{aluno_id}", response_model=AlunoDetailRead)
-def detalhar_aluno(aluno_id: UUID) -> dict:
+def detalhar_aluno(aluno_id: UUID, user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR"))) -> dict:
     try:
         result = read_services.get_aluno(_require_supabase(), aluno_id)
     except HTTPException:
@@ -155,6 +238,10 @@ def detalhar_aluno(aluno_id: UUID) -> dict:
         raise _read_failure() from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Acolhido não encontrado.")
+    if user.role == "MONITOR":
+        owned = _require_supabase().table("contratos").select("id").eq("aluno_id", str(aluno_id)).eq("created_by_user_id", user.id).execute()
+        owned_ids = {str(row["id"]) for row in (owned.data or [])}
+        result["contratos"] = [contract for contract in result.get("contratos", []) if str(contract["id"]) in owned_ids]
     return result
 
 
@@ -164,8 +251,11 @@ def listar_contratos(
     situacao: Literal["ativo", "encerrado", "suspenso"] | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR")),
 ) -> dict:
     try:
+        if user.role == "MONITOR":
+            return read_services.list_contratos(_require_supabase(), limit, offset, aluno_id, situacao, created_by_user_id=user.id)
         return read_services.list_contratos(_require_supabase(), limit, offset, aluno_id, situacao)
     except HTTPException:
         raise
@@ -175,9 +265,12 @@ def listar_contratos(
 
 
 @app.get("/contratos/{contrato_id}", response_model=ContratoDetailRead)
-def detalhar_contrato(contrato_id: UUID) -> dict:
+def detalhar_contrato(contrato_id: UUID, user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR"))) -> dict:
     try:
-        result = read_services.get_contrato(_require_supabase(), contrato_id)
+        if user.role == "MONITOR":
+            result = read_services.get_contrato(_require_supabase(), contrato_id, created_by_user_id=user.id)
+        else:
+            result = read_services.get_contrato(_require_supabase(), contrato_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -200,14 +293,18 @@ def _competencia(value: str | None) -> date | None:
 
 @app.get("/mensalidades", response_model=PaginatedResult[MensalidadeListRead])
 def listar_mensalidades(
+    q: str | None = Query(default=None, max_length=100),
     competencia: str | None = Query(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
     status_cobranca: Literal["pendente", "paga", "cancelada"] | None = Query(default=None, alias="status"),
     aluno_id: UUID | None = None,
     contrato_id: UUID | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: CurrentUser = Depends(require_roles("DIRETOR")),
 ) -> dict:
     try:
+        if q:
+            return read_services.list_mensalidades(_require_supabase(), limit, offset, _competencia(competencia), status_cobranca, aluno_id, contrato_id, q)
         return read_services.list_mensalidades(_require_supabase(), limit, offset, _competencia(competencia), status_cobranca, aluno_id, contrato_id)
     except HTTPException:
         raise
@@ -218,16 +315,20 @@ def listar_mensalidades(
 
 @app.get("/pagamentos", response_model=PaginatedResult[PagamentoListRead])
 def listar_pagamentos(
+    q: str | None = Query(default=None, max_length=100),
     mensalidade_id: UUID | None = None,
     aluno_id: UUID | None = None,
     data_inicio: date | None = None,
     data_fim: date | None = None,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    user: CurrentUser = Depends(require_roles("DIRETOR")),
 ) -> dict:
     if data_inicio and data_fim and data_fim < data_inicio:
         raise HTTPException(status_code=422, detail="Data final deve ser igual ou posterior à data inicial.")
     try:
+        if q:
+            return read_services.list_pagamentos(_require_supabase(), limit, offset, mensalidade_id, aluno_id, data_inicio, data_fim, q)
         return read_services.list_pagamentos(_require_supabase(), limit, offset, mensalidade_id, aluno_id, data_inicio, data_fim)
     except HTTPException:
         raise
@@ -237,7 +338,7 @@ def listar_pagamentos(
 
 
 @app.get("/dashboard/indicadores", response_model=DashboardIndicadoresRead)
-def obter_indicadores_dashboard() -> dict:
+def obter_indicadores_dashboard(user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
     try:
         return read_services.dashboard_indicadores(_require_supabase())
     except HTTPException:
@@ -248,7 +349,7 @@ def obter_indicadores_dashboard() -> dict:
 
 
 @app.post("/contratos/previa-vencimento", response_model=PreviaVencimentoResponse)
-def previa_vencimento(request: PreviaVencimentoCreate) -> dict[str, str]:
+def previa_vencimento(request: PreviaVencimentoCreate, user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR"))) -> dict[str, str]:
     """Calcula a data a conferir antes do POST agregado, sem persistir dados."""
     from datetime import timedelta
 
@@ -256,12 +357,12 @@ def previa_vencimento(request: PreviaVencimentoCreate) -> dict[str, str]:
 
 
 @app.post("/alunos", response_model=CadastroAlunoResponse, status_code=status.HTTP_201_CREATED)
-def cadastrar_aluno(cadastro: CadastroAlunoCreate) -> dict:
+def cadastrar_aluno(cadastro: CadastroAlunoCreate, user: CurrentUser = Depends(require_roles("DIRETOR", "MONITOR"))) -> dict:
     """Cadastra pessoas, contrato e cobranças iniciais em uma transação."""
     if supabase is None:
         raise HTTPException(status_code=503, detail="Backend Supabase não configurado.")
     try:
-        return cadastrar_aluno_contrato(supabase, cadastro)
+        return cadastrar_aluno_contrato(supabase, cadastro, user.id)
     except Exception as exc:
         logger.error(
             "Falha na RPC cadastrar_aluno_contrato (POST /alunos):\n%s",
@@ -272,12 +373,12 @@ def cadastrar_aluno(cadastro: CadastroAlunoCreate) -> dict:
 
 
 @app.post("/contratos", response_model=CadastroAlunoResponse, status_code=status.HTTP_201_CREATED)
-def cadastrar_contrato(contrato: ContratoExistenteCreate) -> dict:
+def cadastrar_contrato(contrato: ContratoExistenteCreate, user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
     """Cria contrato e cobranças iniciais para aluno/responsável já cadastrados."""
     if supabase is None:
         raise HTTPException(status_code=503, detail="Backend Supabase não configurado.")
     try:
-        return cadastrar_contrato_existente(supabase, contrato)
+        return cadastrar_contrato_existente(supabase, contrato, user.id)
     except Exception as exc:
         message = str(exc).lower()
         if "contrato ativo" in message or "unique" in message:
@@ -290,7 +391,7 @@ def cadastrar_contrato(contrato: ContratoExistenteCreate) -> dict:
 
 
 @app.post("/contratos/{contrato_id}/encerrar", response_model=ContratoEncerradoResponse)
-def encerrar_contrato(contrato_id: UUID) -> dict:
+def encerrar_contrato(contrato_id: UUID, user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
     """Encerra o contrato ativo sem alterar parcelas ou pagamentos históricos."""
     if supabase is None:
         raise HTTPException(status_code=503, detail="Backend Supabase não configurado.")
@@ -302,12 +403,12 @@ def encerrar_contrato(contrato_id: UUID) -> dict:
 
 
 @app.post("/alunos/{aluno_id}/reativar", response_model=CadastroAlunoResponse, status_code=status.HTTP_201_CREATED)
-def reativar_aluno(aluno_id: UUID, contrato: ReativarAlunoCreate) -> dict:
+def reativar_aluno(aluno_id: UUID, contrato: ReativarAlunoCreate, user: CurrentUser = Depends(require_roles("DIRETOR"))) -> dict:
     """Reativa aluno encerrado por meio de um novo contrato e suas cobranças iniciais."""
     if supabase is None:
         raise HTTPException(status_code=503, detail="Backend Supabase não configurado.")
     try:
-        return reativar_aluno_com_novo_contrato(supabase, contrato, str(aluno_id))
+        return reativar_aluno_com_novo_contrato(supabase, contrato, str(aluno_id), user.id)
     except Exception as exc:
         code, detail = _rpc_failure_response(exc)
         message = str(exc).lower()
@@ -335,6 +436,7 @@ async def baixar_mensalidade(
         Form(),
     ],
     comprovante: Annotated[UploadFile | None, File()] = None,
+    user: CurrentUser = Depends(require_roles("DIRETOR")),
 ) -> dict:
     """Registra a baixa de uma parcela existente; não cria parcelas."""
     if supabase is None:
