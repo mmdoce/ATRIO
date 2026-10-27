@@ -37,7 +37,11 @@ from app.schemas import (
 from app.services import cadastrar_aluno_contrato, cadastrar_contrato_existente, reativar_aluno_com_novo_contrato
 from app import read_services
 from app.auth import CurrentUser, require_roles
-from app.cors_config import parse_cors_origins
+from app.cors_config import (
+    VERIFIED_VERCEL_PREVIEW_ORIGIN,
+    VERIFIED_VERCEL_PRODUCTION_ORIGIN,
+    parse_cors_origins,
+)
 
 load_dotenv()
 
@@ -97,7 +101,11 @@ def _rpc_failure_response(exc: Exception) -> tuple[int, str]:
     return status.HTTP_500_INTERNAL_SERVER_ERROR, "Não foi possível concluir o cadastro. Consulte o log do backend."
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=parse_cors_origins(os.getenv("CORS_ALLOWED_ORIGINS")),
+    allow_origins=list(dict.fromkeys([
+        *parse_cors_origins(os.getenv("CORS_ALLOWED_ORIGINS")),
+        VERIFIED_VERCEL_PRODUCTION_ORIGIN,
+        VERIFIED_VERCEL_PREVIEW_ORIGIN,
+    ])),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type", "Authorization"],
