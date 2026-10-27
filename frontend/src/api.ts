@@ -1,5 +1,6 @@
 import { createPaymentFormData } from "./paymentFlow.ts";
 import { supabase } from "./supabase";
+import { buildApiUrl } from "./apiUrl";
 
 export type CadastroResponse = {
   aluno_id: string;
@@ -66,13 +67,17 @@ export class ApiError extends Error {
   }
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let url: string;
+  try {
+    url = buildApiUrl(path, import.meta.env.VITE_API_BASE_URL, import.meta.env.DEV);
+  } catch (error) {
+    throw new ApiError(error instanceof Error ? error.message : "Configure VITE_API_BASE_URL.");
+  }
   let response: Response;
   try {
     const { data } = supabase ? await supabase.auth.getSession() : { data: { session: null } };
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    response = await fetch(url, {
       ...init,
       headers: {
         Accept: "application/json",

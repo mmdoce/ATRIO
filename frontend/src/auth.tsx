@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import type { ReactNode } from "react";
 import { supabase } from "./supabase";
+import { buildApiUrl } from "./apiUrl";
 
 type Profile = { id: string; email: string | null; role: "DIRETOR" | "MONITOR" };
 type AuthContextValue = { session: Session | null; profile: Profile | null; loading: boolean; recoveryValid: boolean; signIn(email: string, password: string): Promise<Profile>; signOut(): Promise<void>; requestReset(email: string): Promise<void>; updatePassword(password: string): Promise<void> };
@@ -22,7 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(next);
       if (!next) { setProfile(null); return; }
       try {
-        const response = await fetch(`${(import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "")}/auth/me`, { headers: { Authorization: `Bearer ${next.access_token}` } });
+        const response = await fetch(buildApiUrl("/auth/me", import.meta.env.VITE_API_BASE_URL, import.meta.env.DEV), { headers: { Authorization: `Bearer ${next.access_token}` } });
         if (!response.ok) {
           if (response.status === 401) await client.auth.signOut();
           throw new Error("Conta sem acesso ativo.");
@@ -48,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
       if (!token) throw new Error("Não foi possível recuperar a sessão. Tente novamente.");
-      const response = await fetch(`${(import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "")}/auth/me`, { headers: { Authorization: `Bearer ${token}` } });
+      const response = await fetch(buildApiUrl("/auth/me", import.meta.env.VITE_API_BASE_URL, import.meta.env.DEV), { headers: { Authorization: `Bearer ${token}` } });
       if (response.status === 401 || response.status === 403) { await supabase.auth.signOut(); throw new Error("Conta sem perfil ativo. Solicite acesso ao Diretor do sistema."); }
       if (!response.ok) throw new Error("Não foi possível validar o acesso no servidor. Tente novamente.");
       const nextProfile = await response.json() as Profile;
